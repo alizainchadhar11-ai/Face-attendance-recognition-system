@@ -1,0 +1,390 @@
+=== CELL 0 ===
+import torch
+print("CUDA Available:", torch.cuda.is_available())
+print("Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU only")
+
+=== CELL 1 ===
+from google.colab import drive
+drive.mount('/content/drive')
+
+=== CELL 2 ===
+!pip install facenet-pytorch --no-deps
+
+=== CELL 3 ===
+from facenet_pytorch import MTCNN, InceptionResnetV1
+import torch
+import numpy as np
+
+print("Success! facenet-pytorch imported.")
+print("NumPy version:", np.__version__)
+print("CUDA Available:", torch.cuda.is_available())
+
+=== CELL 4 ===
+from facenet_pytorch import MTCNN, InceptionResnetV1
+import torch
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print("Using device:", device)
+
+# Face detector
+mtcnn = MTCNN(image_size=160, margin=20, keep_all=False, device=device)
+
+# Pre-trained face recognition model (VGGFace2 pe trained)
+resnet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+
+print("Models loaded successfully!")
+
+=== CELL 5 ===
+from google.colab import files
+import os
+
+os.makedirs("/content/known_faces", exist_ok=True)
+
+print("Un logon ki photos upload karo jinhe pehchanna hai.")
+print("Tip: File ka naam person ke naam se rakho, jaise 'Ali.jpg', 'Ahmed.jpg'")
+uploaded = files.upload()
+
+# Files ko known_faces folder mein move karo
+import shutil
+for filename in uploaded.keys():
+    shutil.move(filename, f"/content/known_faces/{filename}")
+
+print("Uploaded files:", os.listdir("/content/known_faces"))
+
+=== CELL 6 ===
+import os
+
+old_name = "/content/known_faces/ChatGPT Image Aug 26, 2026, 11_33_42 PM.png"
+new_name = "/content/known_faces/AliZain.jpg"   # Apna naam yahan likho
+
+os.rename(old_name, new_name)
+print("Renamed! Files now:", os.listdir("/content/known_faces"))
+
+=== CELL 7 ===
+from PIL import Image
+import numpy as np
+
+def get_embedding(image_path, mtcnn, resnet, device):
+    img = Image.open(image_path).convert('RGB')
+
+    # Face detect karo aur crop karo
+    face = mtcnn(img)
+
+    if face is None:
+        print(f"⚠️ Face detect nahi hua: {image_path}")
+        return None
+
+    # Embedding generate karo
+    face = face.unsqueeze(0).to(device)
+    with torch.no_grad():
+        embedding = resnet(face)
+
+    return embedding.cpu().numpy()
+
+# Known faces folder se saari images process karo
+known_embeddings = {}
+known_faces_dir = "/content/known_faces"
+
+for filename in os.listdir(known_faces_dir):
+    person_name = os.path.splitext(filename)[0]   # filename se naam nikalo (extension hata kar)
+    filepath = os.path.join(known_faces_dir, filename)
+
+    embedding = get_embedding(filepath, mtcnn, resnet, device)
+
+    if embedding is not None:
+        known_embeddings[person_name] = embedding
+        print(f"✅ Embedding generated for: {person_name}")
+
+print("\nTotal known faces in database:", len(known_embeddings))
+print("Names:", list(known_embeddings.keys()))
+
+=== CELL 8 ===
+import numpy as np
+
+def cosine_distance(a, b):
+    a = a.flatten()
+    b = b.flatten()
+    return 1 - (np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+def recognize_face(test_image_path, known_embeddings, mtcnn, resnet, device, threshold=0.5):
+    test_embedding = get_embedding(test_image_path, mtcnn, resnet, device)
+
+    if test_embedding is None:
+        return "No face detected in image", None
+
+    best_match = None
+    best_distance = float('inf')
+
+    for name, known_embedding in known_embeddings.items():
+        distance = cosine_distance(test_embedding, known_embedding)
+
+        if distance < best_distance:
+            best_distance = distance
+            best_match = name
+
+    if best_distance < threshold:
+        return best_match, best_distance
+    else:
+        return "Unknown Person", best_distance
+
+=== CELL 9 ===
+from google.colab import files
+import matplotlib.pyplot as plt
+
+print("Test karne ke liye ek naya image upload karo:")
+test_uploaded = files.upload()
+test_filename = list(test_uploaded.keys())[0]
+
+name, distance = recognize_face(test_filename, known_embeddings, mtcnn, resnet, device)
+
+img = Image.open(test_filename)
+plt.figure(figsize=(6, 6))
+plt.imshow(img)
+plt.title(f"Recognized as: {name}" + (f" (distance: {distance:.3f})" if distance else ""))
+plt.axis('off')
+plt.show()
+
+print(f"\nResult: {name}")
+
+=== CELL 10 ===
+from google.colab import files
+import matplotlib.pyplot as plt
+
+print("Apni koi doosri photo upload karo (test ke liye):")
+test_uploaded = files.upload()
+test_filename = list(test_uploaded.keys())[0]
+
+name, distance = recognize_face(test_filename, known_embeddings, mtcnn, resnet, device)
+
+img = Image.open(test_filename)
+plt.figure(figsize=(6, 6))
+plt.imshow(img)
+plt.title(f"Recognized as: {name}" + (f" (distance: {distance:.3f})" if distance else ""))
+plt.axis('off')
+plt.show()
+
+print(f"\nResult: {name}")
+
+
+=== CELL 11 ===
+from IPython.display import display, Javascript
+from google.colab.output import eval_js
+from base64 import b64decode
+
+def take_photo(filename='webcam_capture.jpg', quality=0.8):
+    js = Javascript('''
+        async function takePhoto(quality) {
+            const div = document.createElement('div');
+            const capture = document.createElement('button');
+            capture.textContent = 'Capture Photo';
+            div.appendChild(capture);
+
+            const video = document.createElement('video');
+            video.style.display = 'block';
+            const stream = await navigator.mediaDevices.getUserMedia({video: true});
+
+            document.body.appendChild(div);
+            div.appendChild(video);
+            video.srcObject = stream;
+            await video.play();
+
+            google.colab.output.setIframeHeight(document.documentElement.scrollHeight, true);
+
+            await new Promise((resolve) => capture.onclick = resolve);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            stream.getVideoTracks()[0].stop();
+            div.remove();
+            return canvas.toDataURL('image/jpeg', quality);
+        }
+    ''')
+    display(js)
+    data = eval_js('takePhoto({})'.format(quality))
+    binary = b64decode(data.split(',')[1])
+    with open(filename, 'wb') as f:
+        f.write(binary)
+    return filename
+
+print("Function ready! Ab webcam se photo le sakte ho.")
+
+=== CELL 12 ===
+photo_path = take_photo()
+print("Photo saved:", photo_path)
+
+from PIL import Image
+import matplotlib.pyplot as plt
+
+img = Image.open(photo_path)
+plt.imshow(img)
+plt.axis('off')
+plt.show()
+
+=== CELL 13 ===
+import csv
+from datetime import datetime
+import os
+
+attendance_file = "/content/attendance.csv"
+
+# Agar file pehle se nahi hai to header ke sath banao
+if not os.path.exists(attendance_file):
+    with open(attendance_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["Name", "Date", "Time"])
+
+def mark_attendance(name):
+    today = datetime.now().strftime("%Y-%m-%d")
+    time_now = datetime.now().strftime("%H:%M:%S")
+
+    # Check karo ke aaj is student ki attendance pehle se lagi hai ya nahi
+    already_marked = False
+    if os.path.exists(attendance_file):
+        with open(attendance_file, 'r') as f:
+            reader = csv.reader(f)
+            next(reader, None)  # header skip karo
+            for row in reader:
+                if len(row) >= 2 and row[0] == name and row[1] == today:
+                    already_marked = True
+                    break
+
+    if already_marked:
+        print(f"⚠️ {name} ki attendance aaj pehle se lag chuki hai.")
+        return False
+    else:
+        with open(attendance_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([name, today, time_now])
+        print(f"✅ Attendance marked for {name} at {time_now}")
+        return True
+
+=== CELL 14 ===
+# Webcam se photo lo
+photo_path = take_photo('attendance_capture.jpg')
+
+# Face recognize karo
+name, distance = recognize_face(photo_path, known_embeddings, mtcnn, resnet, device)
+
+# Result dikhao
+img = Image.open(photo_path)
+plt.figure(figsize=(6, 6))
+plt.imshow(img)
+plt.title(f"Recognized: {name}" + (f" (distance: {distance:.3f})" if distance else ""))
+plt.axis('off')
+plt.show()
+
+# Agar known person hai, attendance mark karo
+if name != "Unknown Person" and name != "No face detected in image":
+    mark_attendance(name)
+else:
+    print("❌ Attendance nahi lagi — face recognize nahi hua ya unknown person hai.")
+
+=== CELL 15 ===
+import pandas as pd
+
+df = pd.read_csv(attendance_file)
+print(df)
+
+=== CELL 16 ===
+import csv
+
+with open(attendance_file, 'r') as f:
+    reader = csv.reader(f)
+    for row in reader:
+        print(row)
+
+=== CELL 17 ===
+import csv
+
+with open(attendance_file, 'r') as f:
+    reader = csv.reader(f)
+    for row in reader:
+        print(row)
+
+=== CELL 18 ===
+import os
+print("Current files:", os.listdir("/content/known_faces"))
+
+=== CELL 19 ===
+import os
+
+os.rename("/content/known_faces/images (1).jpg", "/content/known_faces/Ahmed.jpg")
+
+print("Renamed! Files now:", os.listdir("/content/known_faces"))
+
+=== CELL 20 ===
+import os
+
+files_list = os.listdir("/content/known_faces")
+print("Files:", files_list)
+
+=== CELL 21 ===
+import os
+
+os.rename("/content/known_faces/WhatsApp Image 2026-08-28 at 1.58.58 PM.jpeg",
+          "/content/known_faces/Sara.jpg")   # apna student ka naam yahan likho
+
+print("Renamed! Files now:", os.listdir("/content/known_faces"))
+
+=== CELL 22 ===
+known_embeddings = {}
+for filename in os.listdir("/content/known_faces"):
+    person_name = os.path.splitext(filename)[0]
+    filepath = os.path.join("/content/known_faces", filename)
+    embedding = get_embedding(filepath, mtcnn, resnet, device)
+    if embedding is not None:
+        known_embeddings[person_name] = embedding
+        print(f"✅ {person_name} added")
+
+print("\nTotal students in database:", len(known_embeddings))
+print("Names:", list(known_embeddings.keys()))
+
+=== CELL 23 ===
+take_attendance()
+
+=== CELL 24 ===
+def take_attendance():
+    print("📸 Camera khul raha hai... Photo lene ke liye 'Capture Photo' click karo")
+    photo_path = take_photo('attendance_capture.jpg')
+
+    name, distance = recognize_face(photo_path, known_embeddings, mtcnn, resnet, device)
+
+    img = Image.open(photo_path)
+    plt.figure(figsize=(6, 6))
+    plt.imshow(img)
+    plt.title(f"Recognized: {name}")
+    plt.axis('off')
+    plt.show()
+
+    if name not in ["Unknown Person", "No face detected in image"]:
+        mark_attendance(name)
+    else:
+        print("❌ Attendance nahi lagi.")
+
+=== CELL 25 ===
+take_attendance()
+
+=== CELL 26 ===
+import csv
+with open(attendance_file, 'r') as f:
+    reader = csv.reader(f)
+    for row in reader:
+        print(row)
+
+=== CELL 27 ===
+from google.colab import files
+files.download('/content/attendance.csv')
+
+=== CELL 28 ===
+# Agar Colab mein koi capture image save karna ho reference ke liye
+import shutil
+os.makedirs("/content/sample_results", exist_ok=True)
+
+# Jo bhi latest capture hui thi usko copy karo
+shutil.copy("attendance_capture.jpg", "/content/sample_results/sample_recognition.jpg")
+
+!zip -r /content/face_recognition_samples.zip /content/sample_results
+files.download('/content/face_recognition_samples.zip')
+
