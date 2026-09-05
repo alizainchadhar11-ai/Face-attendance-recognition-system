@@ -1,0 +1,64 @@
+{
+  "classes": {
+    "Class 10": [
+      "Math",
+      "Physics",
+      "Biology",
+      "Urdu"
+    ],
+    "abubakar 9": [
+      "math",
+      "science",
+      "chemistry",
+      "english"
+    ],
+    "7 usman": [
+      "islamiyat",
+      "urdu",
+      "pak study"
+    ]
+  },
+  "staff": {
+    "shaid": {
+      "name": "sir shahid",
+      "username": "shaid",
+      "password_hash": "01948ab3838b062015b4075b08c13904aecc5210a9e8d0af7ff7d3ab8c1d2d7e",
+      "salt": "1dc3c2642ade65942fe8c4973c3b113d",
+      "assignments": {
+        "Class 10": [
+          "Biology"
+        ],
+        "abubakar 9": [
+          "math"
+        ]
+      }
+    },
+    "qasim10": {
+      "name": "qari qasim",
+      "username": "qasim10",
+      "password_hash": "0fcc2671229be3aec9a2bfe4077f1bdeb9aceff14f652461561f2230bfea9278",
+      "salt": "f4f4b0929bf1e9c3bee06b1419e8d8b7",
+      "assignments": {
+        "7 usman": [
+          "islamiyat"
+        ]
+      }
+    }
+  },
+  "students": {
+    "Class 10_21": {
+      "student_key": "Class 10_21",
+      "name": "Ali ZAIN",
+      "roll_number": "21",
+      "class_name": "Class 10",
+      "photo_path": "known_faces\\Class 10\\21_AliZAIN.jpg"
+    },
+    "7 usman_110": {
+      "student_key": "7 usman_110",
+      "name": "sami ullah",
+      "roll_number": "110",
+      "class_name": "7 usman",
+      "photo_path": "known_faces\\7 usman\\110_samiullah.jpg"
+    }
+  }
+}

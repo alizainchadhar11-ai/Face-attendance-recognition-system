@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageOps
 from facenet_pytorch import MTCNN, InceptionResnetV1
+from utils.db_utils import add_student_record, delete_student_record
 
 # Reconfigure stdout for UTF-8 support on Windows default terminal (cp1252)
 if hasattr(sys.stdout, 'reconfigure'):
@@ -15,7 +16,6 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 # -------------------------------------------------------------
 # 1. MODELS LOADING FUNCTION
-# MTCNN face detection aur InceptionResnetV1 embeddings ke liye
 # -------------------------------------------------------------
 def load_facenet_models():
     """
@@ -24,7 +24,6 @@ def load_facenet_models():
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Face detector configuration (Matching original Colab notebook)
     mtcnn = MTCNN(
         image_size=160,
         margin=20,
@@ -33,7 +32,6 @@ def load_facenet_models():
         device=device
     )
     
-    # Pretrained face recognition model (VGGFace2 dataset pe trained)
     try:
         resnet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
     except Exception as e:
@@ -50,12 +48,10 @@ def load_facenet_models():
 
 # -------------------------------------------------------------
 # 2. COSINE DISTANCE FUNCTION
-# Notebook logic: 1 - (dot_product / (norm_a * norm_b))
 # -------------------------------------------------------------
 def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
     """
     Do face embeddings ke beech Cosine Distance calculate karta hai.
-    0 ka matlab identical faces, > 0.5 ka matlab different persons.
     """
     a = a.flatten()
     b = b.flatten()
@@ -70,7 +66,6 @@ def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
 
 # -------------------------------------------------------------
 # 3. EMBEDDING GENERATION FUNCTION
-# Image se face detect karke 512-d embedding vector nikalta hai
 # -------------------------------------------------------------
 def get_embedding(image_input, mtcnn, resnet, device):
     """
@@ -86,7 +81,6 @@ def get_embedding(image_input, mtcnn, resnet, device):
         elif isinstance(image_input, Image.Image):
             img = image_input.convert('RGB')
         else:
-            # EXIF orientation fix for mobile/webcam photos
             img = Image.open(image_input).convert('RGB')
             img = ImageOps.exif_transpose(img)
 
@@ -103,7 +97,7 @@ def get_embedding(image_input, mtcnn, resnet, device):
 
         embedding_np = embedding.cpu().numpy()
 
-        # Cropped face ko display ke liye PIL image banayein
+        # Cropped face for UI display
         face_np = face_tensor.permute(1, 2, 0).cpu().numpy()
         face_np = (face_np - face_np.min()) / (face_np.max() - face_np.min() + 1e-5) * 255.0
         face_pil = Image.fromarray(face_np.astype(np.uint8))
@@ -115,19 +109,21 @@ def get_embedding(image_input, mtcnn, resnet, device):
 
 
 # -------------------------------------------------------------
-# 4. LOAD & UPDATE EMBEDDINGS CACHE (embeddings.pkl)
-# Pehle se saved embeddings read karta hai, aur sirf naye photos
-# ki embedding compute karke pickle file update karta hai.
+# 4. LOAD & UPDATE EMBEDDINGS CACHE (CLASS-WISE)
+# embeddings.pkl structure:
+# {
+#    "Class 9": {
+#        "101": {"name": "Ali Zain", "roll_number": "101", "embedding": numpy_array}
+#    }
+# }
 # -------------------------------------------------------------
-def load_or_update_embeddings(known_faces_dir: str, pkl_path: str, mtcnn, resnet, device):
+def load_or_update_embeddings_classwise(known_faces_dir: str, pkl_path: str, mtcnn, resnet, device):
     """
-    known_faces directory se photos scan karke embeddings.pkl load/update karta hai.
-    Purani embeddings dobara generate nahi hoti.
+    known_faces directory se Class-wise subfolders scan karke embeddings.pkl load/update karta hai.
     """
     os.makedirs(known_faces_dir, exist_ok=True)
     known_embeddings = {}
 
-    # Read existing pickle cache if present
     if os.path.exists(pkl_path):
         try:
             with open(pkl_path, 'rb') as f:
@@ -139,57 +135,77 @@ def load_or_update_embeddings(known_faces_dir: str, pkl_path: str, mtcnn, resnet
     updated = False
     valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
 
-    # Find missing/new faces in known_faces_dir
-    for filename in os.listdir(known_faces_dir):
-        if filename.lower().endswith(valid_extensions):
-            person_name = os.path.splitext(filename)[0]
+    # Scan subdirectories in known_faces_dir (Each subfolder = Class Name)
+    for item in os.listdir(known_faces_dir):
+        class_folder = os.path.join(known_faces_dir, item)
+        if os.path.isdir(class_folder):
+            class_name = item  # e.g., "Class 9"
+            if class_name not in known_embeddings:
+                known_embeddings[class_name] = {}
 
-            # Agar student ki embedding pehle se saved nahi hai to generate karo
-            if person_name not in known_embeddings:
-                filepath = os.path.join(known_faces_dir, filename)
-                emb, _, err = get_embedding(filepath, mtcnn, resnet, device)
-                if emb is not None:
-                    known_embeddings[person_name] = emb
-                    updated = True
-                    print(f"[OK] Incremental embedding generated for: {person_name}")
-                else:
-                    print(f"[WARN] Face detection failed for reference file: {filename}")
+            for filename in os.listdir(class_folder):
+                if filename.lower().endswith(valid_extensions):
+                    # Expected filename format: "<RollNumber>_<Name>.jpg" or "<Name>_<RollNumber>.jpg"
+                    base_name = os.path.splitext(filename)[0]
+                    parts = base_name.split('_')
+                    if len(parts) >= 2:
+                        roll_no = parts[0]
+                        student_name = " ".join(parts[1:])
+                    else:
+                        roll_no = base_name
+                        student_name = base_name
 
-    # Save to pickle if any new student was added
+                    if roll_no not in known_embeddings[class_name]:
+                        filepath = os.path.join(class_folder, filename)
+                        emb, _, err = get_embedding(filepath, mtcnn, resnet, device)
+                        if emb is not None:
+                            known_embeddings[class_name][roll_no] = {
+                                "name": student_name,
+                                "roll_number": roll_no,
+                                "embedding": emb
+                            }
+                            updated = True
+                            print(f"[OK] Incremental class embedding generated: {class_name} - {student_name} ({roll_no})")
+                        else:
+                            print(f"[WARN] Face detection failed for reference file: {filepath}")
+
     if updated or not os.path.exists(pkl_path):
         with open(pkl_path, 'wb') as f:
             pickle.dump(known_embeddings, f)
-        print(f"[SAVED] Updated embeddings saved to {pkl_path}")
+        print(f"[SAVED] Class-wise embeddings saved to {pkl_path}")
 
     return known_embeddings
 
 
 # -------------------------------------------------------------
-# 5. REGISTER NEW STUDENT
-# Nayi photo upload + Naam enter karne par auto-rename, save & embed
+# 5. REGISTER NEW STUDENT (CLASS-WISE)
 # -------------------------------------------------------------
-def register_student(image_input, student_name: str, known_faces_dir: str, pkl_path: str, mtcnn, resnet, device):
+def register_student_classwise(image_input, student_name: str, roll_number: str, class_name: str, known_faces_dir: str, pkl_path: str, mtcnn, resnet, device):
     """
-    Naye student ko register karta hai:
-    1. Student name sanitize karta hai
-    2. Image se face detect karta hai
-    3. Image ko known_faces/<CleanName>.jpg ke naam se save karta hai
-    4. Embedding generate karke embeddings.pkl update karta hai
+    Naye student ko class-wise register karta hai:
+    1. Input sanitization
+    2. Face detection check
+    3. Save photo to known_faces/<Class_Name>/<Roll>_<Name>.jpg
+    4. Save to school_db.json & update embeddings.pkl
     """
-    # Name validation & sanitization
     clean_name = "".join([c for c in student_name.strip() if c.isalnum() or c in (" ", "_", "-")]).strip()
-    if not clean_name:
-        return False, "Khabardar: Student name invalid ya khali hai! Kripya sahi naam enter karein.", None
+    clean_roll = "".join([c for c in roll_number.strip() if c.isalnum() or c in ("_", "-")]).strip()
+    clean_class = class_name.strip()
+
+    if not clean_name or not clean_roll or not clean_class:
+        return False, "Student Name, Roll Number aur Class sab zaroori hain.", None
 
     # Step 1: Detect face & extract embedding
     emb, face_pil, err = get_embedding(image_input, mtcnn, resnet, device)
     if emb is None:
-        return False, f"Registration Failed: {err or 'Face not detected in uploaded image!'}", None
+        return False, f"Registration Failed: {err or 'Uploaded image mein face detect nahi hua!'}", None
 
-    # Step 2: Save original reference image to known_faces folder
-    os.makedirs(known_faces_dir, exist_ok=True)
-    target_filename = f"{clean_name}.jpg"
-    target_path = os.path.join(known_faces_dir, target_filename)
+    # Step 2: Create class folder & save reference image
+    class_folder = os.path.join(known_faces_dir, clean_class)
+    os.makedirs(class_folder, exist_ok=True)
+    
+    target_filename = f"{clean_roll}_{clean_name.replace(' ', '')}.jpg"
+    target_path = os.path.join(class_folder, target_filename)
 
     try:
         if hasattr(image_input, "seek"):
@@ -205,7 +221,12 @@ def register_student(image_input, student_name: str, known_faces_dir: str, pkl_p
     except Exception as e:
         return False, f"Failed to save image file: {str(e)}", None
 
-    # Step 3: Load existing embeddings, add new student, and save pickle
+    # Step 3: Update school_db.json
+    db_ok, db_msg = add_student_record(clean_name, clean_roll, clean_class, target_path)
+    if not db_ok:
+        return False, f"Failed to update database: {db_msg}", None
+
+    # Step 4: Update embeddings.pkl
     known_embeddings = {}
     if os.path.exists(pkl_path):
         try:
@@ -214,97 +235,100 @@ def register_student(image_input, student_name: str, known_faces_dir: str, pkl_p
         except Exception:
             known_embeddings = {}
 
-    known_embeddings[clean_name] = emb
+    if clean_class not in known_embeddings:
+        known_embeddings[clean_class] = {}
+
+    known_embeddings[clean_class][clean_roll] = {
+        "name": clean_name,
+        "roll_number": clean_roll,
+        "embedding": emb
+    }
 
     with open(pkl_path, 'wb') as f:
         pickle.dump(known_embeddings, f)
 
-    return True, f"[SUCCESS] Student '{clean_name}' successfully registered and saved to known_faces/{target_filename}!", face_pil
+    return True, f"[SUCCESS] Student '{clean_name}' (Roll: {clean_roll}) registered in {clean_class}!", face_pil
 
 
 # -------------------------------------------------------------
-# 6. FACE RECOGNITION FUNCTION
-# Test image ko DB ke tamam known_embeddings se compare karta hai
+# 6. DELETE STUDENT (CLASS-WISE)
 # -------------------------------------------------------------
-def recognize_face(image_input, known_embeddings: dict, mtcnn, resnet, device, threshold: float = 0.5):
+def delete_student_classwise(class_name: str, roll_number: str, known_faces_dir: str, pkl_path: str):
     """
-    Test image ko known_embeddings se compare karke best match return karta hai.
-    Returns: (match_name, distance, face_crop)
+    Student ko known_faces/<Class_Name>/, embeddings.pkl, aur school_db.json se delete karta hai.
     """
-    if not known_embeddings:
-        return "No registered students in database", None, None
+    clean_class = class_name.strip()
+    clean_roll = roll_number.strip()
 
-    test_embedding, face_pil, err = get_embedding(image_input, mtcnn, resnet, device)
+    if not clean_class or not clean_roll:
+        return False, "Class Name aur Roll Number zaroori hain."
 
-    if test_embedding is None:
-        return "No face detected in image", None, None
+    # Step 1: Delete record from school_db.json
+    delete_student_record(clean_class, clean_roll)
 
-    best_match = None
-    best_distance = float('inf')
-
-    # Cosine distance computation for all known faces
-    for name, known_embedding in known_embeddings.items():
-        dist = cosine_distance(test_embedding, known_embedding)
-        if dist < best_distance:
-            best_distance = dist
-            best_match = name
-
-    # Threshold check (Colab notebook threshold = 0.5)
-    if best_distance < threshold:
-        return best_match, best_distance, face_pil
-    else:
-        return "Unknown Person - Not Registered", best_distance, face_pil
-
-
-# -------------------------------------------------------------
-# 7. DELETE STUDENT FUNCTION
-# Student ko embeddings.pkl aur known_faces folder dono se remove karta hai
-# -------------------------------------------------------------
-def delete_student(student_name: str, known_faces_dir: str, pkl_path: str):
-    """
-    Registered student ko embeddings.pkl cache aur known_faces folder se remove karta hai.
-    Returns: (success_bool, message_str)
-    """
-    clean_name = student_name.strip()
-    if not clean_name:
-        return False, "Student name invalid hai."
-
+    # Step 2: Delete photo file from known_faces/<Class_Name>/
+    class_folder = os.path.join(known_faces_dir, clean_class)
     photo_deleted = False
-    embedding_deleted = False
-
-    # Step 1: Delete image from known_faces directory
-    if os.path.exists(known_faces_dir):
-        valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
-        for ext in valid_extensions:
-            target_path = os.path.join(known_faces_dir, f"{clean_name}{ext}")
-            if os.path.exists(target_path):
+    if os.path.exists(class_folder):
+        for fname in os.listdir(class_folder):
+            if fname.startswith(f"{clean_roll}_") or os.path.splitext(fname)[0] == clean_roll:
                 try:
-                    os.remove(target_path)
+                    os.remove(os.path.join(class_folder, fname))
                     photo_deleted = True
-                    break
                 except Exception as e:
-                    return False, f"Failed to delete photo file: {str(e)}"
+                    print(f"[WARN] Could not remove photo file: {e}")
 
-    # Step 2: Remove student entry from embeddings.pkl
+    # Step 3: Remove from embeddings.pkl
     known_embeddings = {}
     if os.path.exists(pkl_path):
         try:
             with open(pkl_path, 'rb') as f:
                 known_embeddings = pickle.load(f)
-        except Exception as e:
-            return False, f"Failed to load embeddings file: {str(e)}"
+        except Exception:
+            known_embeddings = {}
 
-    if clean_name in known_embeddings:
-        del known_embeddings[clean_name]
-        embedding_deleted = True
+    if clean_class in known_embeddings and clean_roll in known_embeddings[clean_class]:
+        del known_embeddings[clean_class][clean_roll]
         try:
             with open(pkl_path, 'wb') as f:
                 pickle.dump(known_embeddings, f)
         except Exception as e:
-            return False, f"Failed to update embeddings file: {str(e)}"
+            return False, f"Failed to save embeddings pickle: {str(e)}"
 
-    if photo_deleted or embedding_deleted:
-        return True, f"[SUCCESS] Student '{clean_name}' successfully deleted from database and known_faces folder."
+    return True, f"[SUCCESS] Student Roll #{clean_roll} deleted from {clean_class}."
+
+
+# -------------------------------------------------------------
+# 7. SCOPED FACE RECOGNITION FUNCTION (CLASS-SPECIFIC)
+# Match ONLY against students belonging to class_name!
+# -------------------------------------------------------------
+def recognize_face_scoped(image_input, known_embeddings: dict, class_name: str, mtcnn, resnet, device, threshold: float = 0.5):
+    """
+    Test image ko SIRF class_name ke registered students se compare karta hai.
+    Returns: (matched_student_dict_or_str, distance, face_crop)
+    """
+    class_embeddings = known_embeddings.get(class_name, {})
+    if not class_embeddings:
+        return f"No registered students found in {class_name}", None, None
+
+    test_embedding, face_pil, err = get_embedding(image_input, mtcnn, resnet, device)
+    if test_embedding is None:
+        return "No face detected in image", None, None
+
+    best_match_info = None
+    best_distance = float('inf')
+
+    # Cosine distance comparison ONLY for the specified class
+    for roll_no, student_info in class_embeddings.items():
+        known_emb = student_info.get("embedding")
+        if known_emb is not None:
+            dist = cosine_distance(test_embedding, known_emb)
+            if dist < best_distance:
+                best_distance = dist
+                best_match_info = student_info
+
+    # Threshold evaluation (default = 0.5)
+    if best_distance < threshold and best_match_info is not None:
+        return best_match_info, best_distance, face_pil
     else:
-        return False, f"[WARN] Student '{clean_name}' not found in database or folder."
-
+        return "Unknown Person - Not Registered in this Class", best_distance, face_pil
